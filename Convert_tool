@@ -80,12 +80,16 @@ def parse_keyword_line(line: str):
 
 
 def load_cards(path: str):
+    print(f'[1/4] Dang doc file: {path} ...', flush=True)
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         raw_lines = f.readlines()
+    print(f'      Doc xong {len(raw_lines):,} dong.', flush=True)
 
     cards = []
     current = None
-    for raw in raw_lines:
+    for idx, raw in enumerate(raw_lines):
+        if idx and idx % 200000 == 0:
+            print(f'      ... da parse {idx:,}/{len(raw_lines):,} dong', flush=True)
         line = raw.rstrip('\n').rstrip('\r')
         stripped = line.strip()
         if stripped.startswith('**'):
@@ -102,6 +106,7 @@ def load_cards(path: str):
             current.data_lines.append(line)
         else:
             cards.append(Card(header=line, keyword='__RAW__', params={}))
+    print(f'[1/4] Da tach thanh {len(cards):,} card.', flush=True)
     return cards
 
 
@@ -188,32 +193,28 @@ def extract_ids_from_data_lines(data_lines, generate=False):
 
 def parse_element_records(data_lines, node_count):
     """Tra ve list cac dict {'id': int, 'lines': [raw_line,...]}.
-    Neu tong so token khong chia het cho (node_count+1), phan du duoc bao
-    qua tro ve ngoai ham nay de in canh bao."""
-    line_token_counts = []
+    Toi uu: gan moi token voi chi so dong nguon cua no ngay khi tokenize
+    (O(so_token)), roi cat theo tung record bang slicing -- KHONG quet lai
+    toan bo danh sach dong cho tung record (tranh O(so_record x so_dong),
+    rat cham voi file lon hang tram nghin phan tu)."""
     all_tokens = []
-    for dl in data_lines:
+    token_line_idx = []
+    for i, dl in enumerate(data_lines):
         toks = [t.strip() for t in dl.split(',') if t.strip()]
-        line_token_counts.append(len(toks))
         all_tokens.extend(toks)
+        token_line_idx.extend([i] * len(toks))
 
     rec_len = node_count + 1
-    line_bounds = []
-    cum = 0
-    for cnt in line_token_counts:
-        line_bounds.append((cum, cum + cnt))
-        cum += cnt
-
     records = []
     num_records = len(all_tokens) // rec_len
     for r in range(num_records):
-        tok_start = r * rec_len
-        tok_end = tok_start + rec_len
-        rec_line_indices = [i for i, (s, e) in enumerate(line_bounds)
-                             if e > tok_start and s < tok_end]
-        rec_lines = [data_lines[i] for i in rec_line_indices]
+        start = r * rec_len
+        end = start + rec_len
+        first_line = token_line_idx[start]
+        last_line = token_line_idx[end - 1]
+        rec_lines = data_lines[first_line:last_line + 1]
         try:
-            rec_id = int(all_tokens[tok_start])
+            rec_id = int(all_tokens[start])
         except ValueError:
             rec_id = None
         records.append({'id': rec_id, 'lines': rec_lines})
@@ -227,6 +228,7 @@ def parse_element_records(data_lines, node_count):
 # ---------------------------------------------------------------------------
 
 def normalize(cards):
+    print('[2/4] Dang doc *ELSET va *SOLID SECTION ...', flush=True)
     elset_defs = {}
     for c in cards:
         if c.keyword == 'ELSET':
@@ -234,6 +236,7 @@ def normalize(cards):
             generate = 'GENERATE' in c.params
             ids = extract_ids_from_data_lines(c.data_lines, generate=generate)
             elset_defs[raw_name] = {'card': c, 'ids': ids}
+    print(f'      Tim thay {len(elset_defs):,} khoi *ELSET.', flush=True)
 
     solid_section_names = set()
     for c in cards:
@@ -241,6 +244,8 @@ def normalize(cards):
             n = c.params.get('ELSET')
             if n:
                 solid_section_names.add(n)
+    print(f'      Tim thay {len(solid_section_names):,} *SOLID SECTION '
+          f'(component-elset can inline).', flush=True)
 
     id_to_elset_name = {}
     ambiguous_ids = set()
@@ -254,29 +259,40 @@ def normalize(cards):
             id_to_elset_name[eid] = raw_name
     if ambiguous_ids:
         print(f'  [canh bao] {len(ambiguous_ids)} element ID xuat hien trong '
-              f'nhieu hon 1 component-elset cung luc -- kiem tra lai du lieu.')
+              f'nhieu hon 1 component-elset cung luc -- kiem tra lai du lieu.',
+              flush=True)
+    print(f'      Da lap bang tra cuu cho {len(id_to_elset_name):,} element ID.',
+          flush=True)
 
     consumed_ids_per_elset = {name: set() for name in solid_section_names}
 
+    print('[3/4] Dang tach/gom lai cac block *ELEMENT ...', flush=True)
+    element_card_count = 0
+    total_record_count = 0
     new_cards = []
     for c in cards:
         if c.keyword != 'ELEMENT':
             new_cards.append(c)
             continue
 
+        element_card_count += 1
         type_name = c.params.get('TYPE')
         node_count = guess_node_count(type_name)
         if node_count is None:
             print(f'  [canh bao] Khong doan duoc so node cho TYPE={type_name!r} '
-                  f'-> giu nguyen block goc, KHONG tach/inline ELSET cho block nay.')
+                  f'-> giu nguyen block goc, KHONG tach/inline ELSET cho block nay.',
+                  flush=True)
             new_cards.append(c)
             continue
 
         records, leftover = parse_element_records(c.data_lines, node_count)
+        total_record_count += len(records)
+        print(f'      Block #{element_card_count}: TYPE={type_name}, '
+              f'{len(records):,} phan tu ...', flush=True)
         if leftover:
             print(f'  [canh bao] Block *ELEMENT,TYPE={type_name} co du lieu le '
                   f'({leftover} token) khong chia het theo so node={node_count} '
-                  f'-> co the doc sai record cuoi.')
+                  f'-> co the doc sai record cuoi.', flush=True)
 
         if c.params.get('ELSET'):
             new_cards.append(c)
@@ -304,6 +320,9 @@ def normalize(cards):
             for r in recs:
                 sub_card.data_lines.extend(r['lines'])
             new_cards.append(sub_card)
+
+    print(f'      Da xu ly {element_card_count:,} block *ELEMENT '
+          f'({total_record_count:,} phan tu tong cong).', flush=True)
 
     matched_elset_names = set()
     for name in solid_section_names:
@@ -348,8 +367,11 @@ def rebuild_header(card: Card, original_param_order):
 
 
 def write_output(cards, out_path):
+    print(f'[4/4] Dang ghi file output: {out_path} ...', flush=True)
     with open(out_path, 'w', encoding='utf-8') as f:
-        for c in cards:
+        for idx, c in enumerate(cards):
+            if idx and idx % 200000 == 0:
+                print(f'      ... da ghi {idx:,}/{len(cards):,} card', flush=True)
             if c.removed:
                 continue
             if c.keyword in ('__COMMENT__', '__RAW__'):
@@ -360,6 +382,7 @@ def write_output(cards, out_path):
             f.write(header + '\n')
             for dl in c.data_lines:
                 f.write(dl + '\n')
+    print('[4/4] Ghi file xong.', flush=True)
 
 
 # ---------------------------------------------------------------------------

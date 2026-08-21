@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """
-normalize_inp.py
+convert_and_validate_inp.py
 
-Chuan hoa file Abaqus .inp xuat tu HyperMesh 2022 (dinh dang moi, dung
+Script GOP CHUNG normalize_inp.py + validate_inp.py de chi can chay 1 lenh
+Python la vua CONVERT file .inp xuat tu HyperMesh 2022 (dinh dang moi, dung
 "name pool": ELSET tach rieng khoi *ELEMENT, ten set bi gan prefix kieu
-"P15:P15;" hoac "S39;", va nhieu component CUNG TYPE bi GOP CHUNG vao 1
-block *ELEMENT duy nhat) ve lai dang cu phap giong ban xuat tu HyperMesh
-14.0 (moi component = 1 block *ELEMENT rieng, ELSET nhung truc tiep vao
-dong *ELEMENT, ten set khong bi prefix).
+"P15;P15;P15;..." hoac "S39;...") ve lai dung cu phap giong ban xuat tu
+HyperMesh 14.0, VUA TU DONG KIEM TRA (validate) lai ket qua convert, in
+bao cao PASS/FAIL ro rang.
 
-Nhung viec tool nay lam:
+===========================================================================
+PHAN 1 -- CONVERT (noi dung goc: normalize_inp.py)
+===========================================================================
+Nhung viec phan CONVERT lam:
   1. Doc file .inp, tach thanh cac "card" (dong keyword + cac dong du lieu
-     theo sau).
+     theo sau). Dong comment "**" bi loai bo hoan toan khoi output.
   2. Voi moi *SOLID SECTION, doc ten ELSET no tham chieu toi -> day la danh
      sach "component-elset" can duoc inline lai vao *ELEMENT.
   3. Voi moi *ELSET tren, doc list ID phan tu no dai dien (ho tro ca dang
@@ -26,26 +29,54 @@ Nhung viec tool nay lam:
      no bi XOA (vi da thanh redundant/inline). Elset khong khop het (vd set
      gop nhieu component nhu ALL_MASSIVE_ELEMENTS) thi GIU NGUYEN dang
      *ELSET rieng, chi lam sach ten (bo prefix pool).
-  6. Lam sach prefix "Pxx:Pxx;" / "Sxx;" khoi MOI ten set con lai duoc tham
+  6. Lam sach prefix "Pxx;.../Sxx;..." (ke ca khi bi lap chuoi nhieu lan,
+     vd "P15;P15;P15;Upper" -> "Upper") khoi MOI ten set con lai duoc tham
      chieu: *SOLID SECTION, *ELSET, *SURFACE, *NSET...
+  7. Moi keyword (vd *Surface) duoc chuan hoa VIET HOA lai (*SURFACE).
 
-CACH DUNG:
-    python3 normalize_inp.py input_2022.inp output_normalized.inp
+===========================================================================
+PHAN 2 -- VALIDATE (noi dung goc: validate_inp.py)
+===========================================================================
+Script kiem tra DOC LAP voi phan CONVERT o tren -- KHONG dung lai ket qua
+grouping cua no, ma tu doc lai file GOC (truoc convert) va file OUTPUT
+(sau convert) de tu suy ra xem viec gan ELSET/inline co dung khong.
 
-LUU Y:
-  - Can biet so node/element cho tung TYPE de tach dung record (bang
-    ELEMENT_NODE_COUNTS + fallback regex ben duoi). Neu gap TYPE la, script
-    se in canh bao -- bao lai de bo sung.
-  - De don gian, cac record duoc ghi lai giu nguyen dong text goc (khong
-    bien dang whitespace), nhung neu 1 record von nam giua 2 dong (do
-    HM chia record do lam 2), toan bo 2 dong do se di theo record khi tach
-    block, dam bao khong lam vo cu phap continuation.
+CAC PHEP KIEM TRA:
+  1. BAO TOAN PHAN TU: tap hop ID phan tu trong OUTPUT phai giong HET tap
+     hop ID phan tu trong INPUT (khong mat, khong trung, khong bia them).
+  2. BAO TOAN NODE: tap hop ID node trong OUTPUT phai giong INPUT.
+  3. GAN DUNG COMPONENT: voi tung *SOLID SECTION trong file GOC (tim ra
+     component-elset can inline), tu tinh lai tap ID cua elset do TU FILE
+     GOC, roi so sanh voi tap ID nam trong (cac) block *ELEMENT co
+     ELSET=ten_do trong OUTPUT. Neu lech dau -> bao chinh xac ID nao bi
+     gan sai / bi thieu / bi thua.
+  4. KHONG CON THAM CHIEU TREO: moi *SOLID SECTION trong OUTPUT tham chieu
+     ELSET nao thi ELSET do phai ton tai (hoac la 1 *ELEMENT block co
+     ELSET trung ten, hoac 1 *ELSET block rieng). (*SURFACE NAME khong
+     tinh la tham chieu vi do la ten DANG DUOC DINH NGHIA, khong phai
+     tra cuu toi ELSET co san.)
+  5. DO DAI DONG: khong dong nao trong OUTPUT vuot 256 ky tu (gioi han cu
+     phap Abaqus).
+  6. Khong con ten nao dinh dang "Pxx;..." hoac "Sxx;..." sot lai trong
+     OUTPUT (nghia la buoc lam sach ten chay het, khong bi sot).
+
+===========================================================================
+CACH DUNG (chi 1 lenh, chay ca convert + validate):
+    python3 convert_and_validate_inp.py input_2022.inp output_normalized.inp
+
+Thoat voi exit code 0 neu VALIDATE PASS het, exit code 1 neu co FAIL -- de
+co the gan vao quy trinh tu dong.
+===========================================================================
 """
 
 import re
 import sys
 from dataclasses import dataclass, field
 
+
+# ===========================================================================
+# PHAN 1 -- CONVERT
+# ===========================================================================
 
 # ---------------------------------------------------------------------------
 # Buoc 1: doc file thanh danh sach "card"
@@ -118,9 +149,20 @@ POOL_PREFIX_RE = re.compile(r'^[A-Za-z]+\d+(?::[A-Za-z]+\d+)?;')
 
 
 def clean_pool_name(raw_name: str) -> str:
+    """Bo TAT CA prefix pool o dau ten, ke ca khi bi lap chuoi nhieu lan
+    (vd 'P15;P15;P15;Upper' -> 'Upper'). POOL_PREFIX_RE.sub() chi khop
+    duoc 1 lan vi pattern neo bang ^, nen phai lap cho den khi khong con
+    khop nua (tranh vong lap vo han bang cach dung lai khi chuoi khong
+    doi sau 1 lan thay the)."""
     if raw_name is None:
         return raw_name
-    return POOL_PREFIX_RE.sub('', raw_name.strip())
+    name = raw_name.strip()
+    while True:
+        new_name = POOL_PREFIX_RE.sub('', name, count=1)
+        if new_name == name:
+            break
+        name = new_name
+    return name
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +266,7 @@ def parse_element_records(data_lines, node_count):
 
 
 # ---------------------------------------------------------------------------
-# Buoc 6: xu ly chinh
+# Buoc 6: xu ly chinh (convert)
 # ---------------------------------------------------------------------------
 
 def normalize(cards):
@@ -374,7 +416,10 @@ def write_output(cards, out_path):
                 print(f'      ... da ghi {idx:,}/{len(cards):,} card', flush=True)
             if c.removed:
                 continue
-            if c.keyword in ('__COMMENT__', '__RAW__'):
+            if c.keyword == '__COMMENT__':
+                # Yeu cau: don sach het cac dong comment "**" khoi output.
+                continue
+            if c.keyword == '__RAW__':
                 f.write(c.header + '\n')
                 continue
             _, original_params = parse_keyword_line(c.header)
@@ -385,24 +430,261 @@ def write_output(cards, out_path):
     print('[4/4] Ghi file xong.', flush=True)
 
 
-# ---------------------------------------------------------------------------
-# main
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# PHAN 2 -- VALIDATE
+# ===========================================================================
+
+def collect_element_ids_by_block(cards):
+    """Doc lap voi normalize(): duyet tung *ELEMENT block, tra ve
+    (all_ids_set, list_of_blocks) voi moi block la {'elset': ten_hoac_None,
+    'ids': set}. Dung guess_node_count/parse_element_records o PHAN 1 (chi
+    de tokenize dung), nhung KHONG dung ket qua grouping cua normalize()."""
+    all_ids = set()
+    duplicate_ids = set()
+    blocks = []
+    for c in cards:
+        if c.keyword != 'ELEMENT':
+            continue
+        node_count = guess_node_count(c.params.get('TYPE'))
+        if node_count is None:
+            print(f'  [validate CANH BAO] Bo qua kiem tra block TYPE='
+                  f'{c.params.get("TYPE")!r} (khong biet so node).')
+            continue
+        records, leftover = parse_element_records(c.data_lines, node_count)
+        ids = set()
+        for r in records:
+            if r['id'] is None:
+                continue
+            if r['id'] in all_ids:
+                duplicate_ids.add(r['id'])
+            all_ids.add(r['id'])
+            ids.add(r['id'])
+        blocks.append({'elset': c.params.get('ELSET'), 'ids': ids,
+                        'type': c.params.get('TYPE')})
+    return all_ids, duplicate_ids, blocks
+
+
+def collect_node_ids(cards):
+    ids = set()
+    for c in cards:
+        if c.keyword == 'NODE':
+            for dl in c.data_lines:
+                tok = dl.split(',')[0].strip()
+                if tok:
+                    try:
+                        ids.add(int(tok))
+                    except ValueError:
+                        pass
+    return ids
+
+
+def collect_elset_ids_from_original(cards):
+    """Tu file GOC: raw_name -> set ID (doc truc tiep tu *ELSET, doc lap
+    voi normalize())."""
+    out = {}
+    for c in cards:
+        if c.keyword == 'ELSET':
+            raw_name = c.params.get('ELSET')
+            generate = 'GENERATE' in c.params
+            ids = extract_ids_from_data_lines(c.data_lines, generate=generate)
+            out[raw_name] = ids
+    return out
+
+
+def collect_solid_section_names(cards):
+    return {c.params.get('ELSET') for c in cards
+            if c.keyword == 'SOLID SECTION' and c.params.get('ELSET')}
+
+
+def all_defined_set_names(cards):
+    """Ten set duoc DINH NGHIA trong file (lam key tra cuu ton tai)."""
+    names = set()
+    for c in cards:
+        if c.keyword == 'ELSET' and c.params.get('ELSET'):
+            names.add(c.params['ELSET'])
+        if c.keyword == 'ELEMENT' and c.params.get('ELSET'):
+            names.add(c.params['ELSET'])
+    return names
+
+
+def all_referenced_set_names(cards):
+    """*SURFACE NAME khong tinh la tham chieu vi do la ten DANG DUOC DINH
+    NGHIA (bang mot bo mat moi), khong phai tra cuu toi mot ELSET co san."""
+    names = set()
+    for c in cards:
+        if c.keyword == 'SOLID SECTION' and c.params.get('ELSET'):
+            names.add(c.params['ELSET'])
+    return names
+
+
+def check_line_lengths(path, limit=256):
+    bad = []
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        for i, line in enumerate(f, start=1):
+            if len(line.rstrip('\n').rstrip('\r')) > limit:
+                bad.append(i)
+    return bad
+
+
+def find_leftover_pool_prefixes(cards):
+    hits = []
+    for c in cards:
+        for key in ('ELSET', 'NSET', 'NAME'):
+            v = c.params.get(key)
+            if v and POOL_PREFIX_RE.match(v):
+                hits.append((c.header, key, v))
+    return hits
+
+
+def validate(orig_cards, out_path):
+    """Chay toan bo 6 phep kiem tra, in bao cao PASS/FAIL. Tra ve True neu
+    PASS het, False neu co it nhat 1 FAIL."""
+    print(f'Dang doc lai file output de validate: {out_path}')
+    out_cards = load_cards(out_path)
+
+    failures = []
+    warnings = []
+
+    # --- 1. Bao toan phan tu ---
+    orig_elem_ids, orig_dups, orig_blocks = collect_element_ids_by_block(orig_cards)
+    out_elem_ids, out_dups, out_blocks = collect_element_ids_by_block(out_cards)
+
+    if orig_dups:
+        warnings.append(f'File GOC da co san {len(orig_dups)} ID phan tu bi trung '
+                         f'(khong lien quan toi convert).')
+    if out_dups:
+        failures.append(f'OUTPUT co {len(out_dups)} ID phan tu bi TRUNG LAP sau khi '
+                         f'tach block (loi convert): {sorted(list(out_dups))[:10]} ...')
+
+    missing = orig_elem_ids - out_elem_ids
+    extra = out_elem_ids - orig_elem_ids
+    if missing:
+        failures.append(f'OUTPUT bi THIEU {len(missing)} phan tu so voi file goc: '
+                         f'{sorted(list(missing))[:10]} ...')
+    if extra:
+        failures.append(f'OUTPUT co THEM {len(extra)} phan tu la KHONG co trong file goc: '
+                         f'{sorted(list(extra))[:10]} ...')
+    if not missing and not extra and not out_dups:
+        print(f'[PASS] Bao toan phan tu: {len(orig_elem_ids):,} phan tu khop hoan toan.')
+
+    # --- 2. Bao toan node ---
+    orig_node_ids = collect_node_ids(orig_cards)
+    out_node_ids = collect_node_ids(out_cards)
+    if orig_node_ids != out_node_ids:
+        failures.append(f'Tap ID node OUTPUT khac file goc (thieu '
+                         f'{len(orig_node_ids - out_node_ids)}, thua '
+                         f'{len(out_node_ids - orig_node_ids)}).')
+    else:
+        print(f'[PASS] Bao toan node: {len(orig_node_ids):,} node khop hoan toan.')
+
+    # --- 3. Gan dung component (so voi *SOLID SECTION trong file GOC) ---
+    orig_elset_ids = collect_elset_ids_from_original(orig_cards)
+    orig_solid_names = collect_solid_section_names(orig_cards)
+
+    out_ids_by_clean_elset = {}
+    for b in out_blocks:
+        if not b['elset']:
+            continue
+        out_ids_by_clean_elset.setdefault(b['elset'], set()).update(b['ids'])
+
+    mismatch_count = 0
+    for raw_name in sorted(orig_solid_names):
+        expected_ids = orig_elset_ids.get(raw_name)
+        if expected_ids is None:
+            warnings.append(f'*SOLID SECTION tham chieu ELSET={raw_name!r} nhung '
+                             f'khong tim thay dinh nghia *ELSET tuong ung trong file goc.')
+            continue
+        clean_name = clean_pool_name(raw_name)
+        actual_ids = out_ids_by_clean_elset.get(clean_name, set())
+        if actual_ids != expected_ids:
+            mismatch_count += 1
+            miss = expected_ids - actual_ids
+            extra_ids = actual_ids - expected_ids
+            detail = []
+            if miss:
+                detail.append(f'thieu {len(miss)} ID (vd {sorted(list(miss))[:5]})')
+            if extra_ids:
+                detail.append(f'thua {len(extra_ids)} ID (vd {sorted(list(extra_ids))[:5]})')
+            failures.append(f'Component "{clean_name}": gan SAI trong OUTPUT -- '
+                             f'{", ".join(detail)}.')
+    if mismatch_count == 0:
+        print(f'[PASS] Gan dung component: {len(orig_solid_names):,} component '
+              f'deu khop chinh xac tung ID.')
+
+    # --- 4. Khong con tham chieu treo ---
+    defined = all_defined_set_names(out_cards)
+    referenced = all_referenced_set_names(out_cards)
+    dangling = referenced - defined
+    if dangling:
+        failures.append(f'OUTPUT co {len(dangling)} ten set duoc tham chieu nhung '
+                         f'KHONG duoc dinh nghia o dau ca: {sorted(dangling)}')
+    else:
+        print(f'[PASS] Khong co tham chieu treo ({len(referenced):,} ten duoc kiem tra).')
+
+    # --- 5. Do dai dong ---
+    bad_lines = check_line_lengths(out_path)
+    if bad_lines:
+        failures.append(f'OUTPUT co {len(bad_lines)} dong vuot 256 ky tu '
+                         f'(dong: {bad_lines[:10]} ...) -- vi pham cu phap Abaqus.')
+    else:
+        print('[PASS] Khong dong nao vuot 256 ky tu.')
+
+    # --- 6. Khong con sot prefix pool ---
+    leftover = find_leftover_pool_prefixes(out_cards)
+    if leftover:
+        failures.append(f'OUTPUT con sot {len(leftover)} ten chua duoc lam sach prefix '
+                         f'pool: {[(k, v) for _, k, v in leftover[:5]]}')
+    else:
+        print('[PASS] Khong con sot prefix "Pxx;" / "Sxx;" nao trong ten set.')
+
+    # --- Tong ket ---
+    print()
+    if warnings:
+        print(f'{len(warnings)} canh bao (khong lam FAIL):')
+        for w in warnings:
+            print(f'  [canh bao] {w}')
+        print()
+
+    if failures:
+        print(f'===> VALIDATE FAIL: {len(failures)} loi phat hien =================')
+        for f_ in failures:
+            print(f'  [FAIL] {f_}')
+        print('===============================================================')
+        return False
+    else:
+        print('===> VALIDATE PASS: khong phat hien loi nao. =====================')
+        return True
+
+
+# ===========================================================================
+# main -- chay CONVERT roi VALIDATE noi tiep, chi 1 lenh Python
+# ===========================================================================
 
 def main():
     if len(sys.argv) != 3:
-        print('Cach dung: python3 normalize_inp.py input.inp output.inp')
+        print('Cach dung: python3 convert_and_validate_inp.py input.inp output.inp')
         sys.exit(1)
 
     in_path, out_path = sys.argv[1], sys.argv[2]
-    cards = load_cards(in_path)
-    new_cards, matched = normalize(cards)
+
+    print('========================= BUOC 1: CONVERT ==========================')
+    orig_cards = load_cards(in_path)
+    new_cards, matched = normalize(orig_cards)
     write_output(new_cards, out_path)
 
     print(f'Da xu ly {in_path} -> {out_path}')
     print(f'So ELSET duoc inline lai vao *ELEMENT (va xoa block rieng): {len(matched)}')
     for name in sorted(matched):
         print(f'   - {name}  ->  {clean_pool_name(name)}')
+
+    print()
+    print('========================= BUOC 2: VALIDATE =========================')
+    # Doc lai file GOC tu dau (doc lap voi cards da bi normalize() sua doi
+    # tai cho, dam bao validate luon dung du lieu "sach" tu file goc).
+    fresh_orig_cards = load_cards(in_path)
+    ok = validate(fresh_orig_cards, out_path)
+
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == '__main__':

@@ -4,33 +4,42 @@ normalize_inp.py
 
 Chuan hoa file Abaqus .inp xuat tu HyperMesh 2022 (dinh dang moi, dung
 "name pool": ELSET tach rieng khoi *ELEMENT, ten set bi gan prefix kieu
-"P15:P15;" hoac "S39;") ve lai dang cu phap giong ban xuat tu HyperMesh
-14.0 (ELSET nhung truc tiep vao dong *ELEMENT, ten set khong bi prefix).
+"P15:P15;" hoac "S39;", va nhieu component CUNG TYPE bi GOP CHUNG vao 1
+block *ELEMENT duy nhat) ve lai dang cu phap giong ban xuat tu HyperMesh
+14.0 (moi component = 1 block *ELEMENT rieng, ELSET nhung truc tiep vao
+dong *ELEMENT, ten set khong bi prefix).
 
 Nhung viec tool nay lam:
-  1. Doc file .inp, tach thanh cac "card" (dong keyword bat dau bang '*'
-     nhung khong phai '**' comment, cung voi cac dong du lieu theo sau).
-  2. Voi moi *SOLID SECTION, doc ten ELSET no tham chieu toi.
-  3. Voi moi *ELSET rieng (dinh nghia list ID hoac GENERATE), doc list ID
-     phan tu ma no dai dien.
-  4. Voi moi *ELEMENT block (co the da co ELSET=, hoac chua co), doc list
-     ID phan tu thuc te trong block do.
-  5. Neu mot *ELSET rieng co list ID KHOP CHINH XAC (tap hop) voi mot
-     *ELEMENT block -> gan ELSET=<ten_da_lam_sach> vao dong *ELEMENT do,
-     va xoa bo khoi *ELSET rieng (vi da thanh redundant/inline).
-     Neu KHONG khop (vd set gop nhieu component nhu ALL_MASSIVE_ELEMENTS)
-     -> giu nguyen dang *ELSET rieng, chi lam sach ten (bo prefix pool).
-  6. Lam sach prefix kieu "P15:P15;" / "S39;" khoi MOI cho ten set duoc
-     tham chieu: *SOLID SECTION, *ELSET, *SURFACE, va bat ky ELSET=/NSET=
-     nao khac xuat hien trong cac dong keyword.
+  1. Doc file .inp, tach thanh cac "card" (dong keyword + cac dong du lieu
+     theo sau).
+  2. Voi moi *SOLID SECTION, doc ten ELSET no tham chieu toi -> day la danh
+     sach "component-elset" can duoc inline lai vao *ELEMENT.
+  3. Voi moi *ELSET tren, doc list ID phan tu no dai dien (ho tro ca dang
+     liet ke truc tiep lan GENERATE start-stop-step).
+  4. Voi moi block *ELEMENT (biet so node/record qua TYPE), tach thanh tung
+     "record" (id + cac node), roi GOM cac record lien tiep co cung
+     "chu so huu" (component-elset chua ID do) thanh 1 block con, gan
+     ELSET=<ten_da_lam_sach> cho block con do. Record khong thuoc component-
+     elset nao thi giu nguyen khong ELSET.
+  5. Sau khi xu ly HET cac block *ELEMENT, elset nao co toan bo ID da duoc
+     "hut" het vao cac block con (khong con sot) thi block *ELSET rieng cua
+     no bi XOA (vi da thanh redundant/inline). Elset khong khop het (vd set
+     gop nhieu component nhu ALL_MASSIVE_ELEMENTS) thi GIU NGUYEN dang
+     *ELSET rieng, chi lam sach ten (bo prefix pool).
+  6. Lam sach prefix "Pxx:Pxx;" / "Sxx;" khoi MOI ten set con lai duoc tham
+     chieu: *SOLID SECTION, *ELSET, *SURFACE, *NSET...
 
 CACH DUNG:
     python3 normalize_inp.py input_2022.inp output_normalized.inp
 
-Tool nay hoat dong dua tren cau truc quan sat duoc qua cac anh chup man
-hinh; neu file thuc te co them truong hop dac biet (vd *ELSET GENERATE,
-*NSET, *SURFACE dang NODE, include file...), can kiem tra lai ket qua va
-bao lai de dieu chinh regex/logic ben duoi.
+LUU Y:
+  - Can biet so node/element cho tung TYPE de tach dung record (bang
+    ELEMENT_NODE_COUNTS + fallback regex ben duoi). Neu gap TYPE la, script
+    se in canh bao -- bao lai de bo sung.
+  - De don gian, cac record duoc ghi lai giu nguyen dong text goc (khong
+    bien dang whitespace), nhung neu 1 record von nam giua 2 dong (do
+    HM chia record do lam 2), toan bo 2 dong do se di theo record khi tach
+    block, dam bao khong lam vo cu phap continuation.
 """
 
 import re
@@ -39,23 +48,20 @@ from dataclasses import dataclass, field
 
 
 # ---------------------------------------------------------------------------
-# Buoc 1: doc file thanh danh sach "card" (1 dong keyword + cac dong du lieu)
+# Buoc 1: doc file thanh danh sach "card"
 # ---------------------------------------------------------------------------
 
 @dataclass
 class Card:
-    header: str                # dong keyword goc, vd "*ELEMENT,TYPE=C3D6,..."
-    keyword: str                # ten keyword viet hoa, vd "ELEMENT"
-    params: dict                # {'TYPE': 'C3D6', 'ELSET': 'Bolt_Penta', ...}
-    data_lines: list = field(default_factory=list)   # cac dong du lieu (raw, giu nguyen)
-    is_comment: bool = False    # dong bat dau bang '**'
-    removed: bool = False       # danh dau de bo khi ghi file output
+    header: str
+    keyword: str
+    params: dict
+    data_lines: list = field(default_factory=list)
+    is_comment: bool = False
+    removed: bool = False
 
 
 def parse_keyword_line(line: str):
-    """Tach 1 dong '*KEYWORD, PARAM1=val1, PARAM2, PARAM3=val3' thanh
-    (keyword, {param: value_or_None}), giu nguyen chu hoa/thuong cua value
-    nhung keyword/param-name so sanh khong phan biet hoa thuong."""
     content = line.strip()
     if content.endswith(('\\', '\r')):
         content = content.rstrip('\\\r')
@@ -92,23 +98,17 @@ def load_cards(path: str):
             current = Card(header=line, keyword=keyword, params=params)
             cards.append(current)
             continue
-        # dong du lieu -> gan vao card hien tai (neu co)
         if current is not None:
             current.data_lines.append(line)
         else:
-            # dong du lieu "mo coi" truoc keyword dau tien -> giu rieng
             cards.append(Card(header=line, keyword='__RAW__', params={}))
     return cards
 
 
 # ---------------------------------------------------------------------------
-# Buoc 2: tien ich lam sach ten bi gan prefix "name pool"
+# Buoc 2: lam sach ten bi gan prefix "name pool"
 # ---------------------------------------------------------------------------
 
-# Cac dang prefix da quan sat:
-#   P15:P15;Upper           -> Upper      (property-pool, "Pxx:Pxx;")
-#   S39;ALL_MASSIVE_ELEMENTS -> ALL_MASSIVE_ELEMENTS   (set-pool, "Sxx;")
-#   S35;S_BE_SURFACE        -> S_BE_SURFACE
 POOL_PREFIX_RE = re.compile(r'^[A-Za-z]+\d+(?::[A-Za-z]+\d+)?;')
 
 
@@ -119,13 +119,49 @@ def clean_pool_name(raw_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Buoc 3: trich ID phan tu dau tien tren moi dong du lieu (element id, hoac
-# node id trong truong hop *ELSET liet ke)
+# Buoc 3: so node theo TYPE, de tach dung tung record trong *ELEMENT
+# ---------------------------------------------------------------------------
+
+ELEMENT_NODE_COUNTS = {
+    'C3D4': 4, 'C3D4H': 4,
+    'C3D6': 6, 'C3D6H': 6,
+    'C3D8': 8, 'C3D8H': 8, 'C3D8I': 8, 'C3D8IH': 8, 'C3D8R': 8, 'C3D8RH': 8,
+    'C3D8T': 8,
+    'C3D10': 10, 'C3D10H': 10, 'C3D10M': 10, 'C3D10MH': 10, 'C3D10I': 10,
+    'C3D10MT': 10,
+    'C3D15': 15, 'C3D15H': 15,
+    'C3D20': 20, 'C3D20H': 20, 'C3D20R': 20, 'C3D20RH': 20,
+    'S3': 3, 'S3R': 3, 'STRI3': 3,
+    'S4': 4, 'S4R': 4, 'S4RS': 4,
+    'S8R': 8, 'S8R5': 8, 'STRI65': 6,
+    'T3D2': 2, 'T2D2': 2,
+    'B21': 2, 'B31': 2, 'B22': 3, 'B32': 3,
+}
+
+
+def guess_node_count(type_name):
+    if not type_name:
+        return None
+    t = type_name.upper()
+    if t in ELEMENT_NODE_COUNTS:
+        return ELEMENT_NODE_COUNTS[t]
+    m = re.match(r'C3D(\d+)', t)
+    if m:
+        return int(m.group(1))
+    m = re.match(r'C(?:AX|PE|PS)(\d+)', t)
+    if m:
+        return int(m.group(1))
+    m = re.match(r'S(\d+)', t)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Buoc 4: tach *ELSET (list hoac GENERATE) thanh tap ID
 # ---------------------------------------------------------------------------
 
 def extract_ids_from_data_lines(data_lines, generate=False):
-    """Tra ve tap hop (set) cac ID nguyen duoc liet ke trong cac dong du
-    lieu. Neu generate=True, moi dong duoc hieu la 'start, stop, step'."""
     ids = set()
     if generate:
         for dl in data_lines:
@@ -146,105 +182,52 @@ def extract_ids_from_data_lines(data_lines, generate=False):
     return ids
 
 
-# So node cho cac loai element Abaqus thuong gap (element_id KHONG tinh
-# trong so nay -- day la so node thuc, tong so truong tren 1 record =
-# node_count + 1). Bo sung them neu file cua ban dung TYPE khac.
-ELEMENT_NODE_COUNTS = {
-    'C3D4': 4, 'C3D4H': 4,
-    'C3D6': 6, 'C3D6H': 6,
-    'C3D8': 8, 'C3D8H': 8, 'C3D8I': 8, 'C3D8IH': 8, 'C3D8R': 8, 'C3D8RH': 8,
-    'C3D8T': 8,
-    'C3D10': 10, 'C3D10H': 10, 'C3D10M': 10, 'C3D10MH': 10, 'C3D10I': 10,
-    'C3D10MT': 10,
-    'C3D15': 15, 'C3D15H': 15,
-    'C3D20': 20, 'C3D20H': 20, 'C3D20R': 20, 'C3D20RH': 20,
-    'S3': 3, 'S3R': 3, 'STRI3': 3,
-    'S4': 4, 'S4R': 4, 'S4RS': 4,
-    'S8R': 8, 'S8R5': 8, 'STRI65': 6,
-    'T3D2': 2, 'T2D2': 2,
-    'B21': 2, 'B31': 2, 'B22': 3, 'B32': 3,
-}
+# ---------------------------------------------------------------------------
+# Buoc 5: tach *ELEMENT thanh tung "record" (id + cac dong text goc cua no)
+# ---------------------------------------------------------------------------
 
-
-def guess_node_count(type_name):
-    """Doan so node cua 1 element TYPE. Uu tien tra bang co san; neu khong
-    co, thu regex cho cac ho ten thuong gap (Cxx#, S#...); tra None neu
-    chiu (luc do se fallback ve heuristic dau phay cuoi dong, kem canh
-    bao de nguoi dung tu kiem tra)."""
-    if not type_name:
-        return None
-    t = type_name.upper()
-    if t in ELEMENT_NODE_COUNTS:
-        return ELEMENT_NODE_COUNTS[t]
-    m = re.match(r'C3D(\d+)', t)
-    if m:
-        return int(m.group(1))
-    m = re.match(r'C(?:AX|PE|PS)(\d+)', t)  # 2D continuum: CAX4, CPE8, ...
-    if m:
-        return int(m.group(1))
-    m = re.match(r'S(\d+)', t)
-    if m:
-        return int(m.group(1))
-    return None
-
-
-def extract_element_ids(data_lines, node_count=None):
-    """Cho *ELEMENT: gop tat ca token (tach theo dau phay, bo token rong do
-    dau phay cuoi dong) thanh 1 dong chay, roi cat thanh tung record co do
-    dai co dinh = node_count + 1 (id + node). Day la cach dung vi Abaqus
-    /HyperMesh co the ghi dau phay cuoi dong ke ca khi record da du du lieu
-    (khong phai luc nao dau phay cuoi dong cung nghia la 'con tiep tuc').
-
-    Neu khong xac dinh duoc node_count (TYPE la), fallback ve heuristic cu:
-    dau phay cuoi dong = record chua xong (co the sai voi mot so TYPE)."""
-    tokens = []
+def parse_element_records(data_lines, node_count):
+    """Tra ve list cac dict {'id': int, 'lines': [raw_line,...]}.
+    Neu tong so token khong chia het cho (node_count+1), phan du duoc bao
+    qua tro ve ngoai ham nay de in canh bao."""
+    line_token_counts = []
+    all_tokens = []
     for dl in data_lines:
-        tokens.extend(tok.strip() for tok in dl.split(',') if tok.strip())
+        toks = [t.strip() for t in dl.split(',') if t.strip()]
+        line_token_counts.append(len(toks))
+        all_tokens.extend(toks)
 
-    ids = set()
-    if node_count:
-        rec_len = node_count + 1
-        for i in range(0, len(tokens), rec_len):
-            chunk = tokens[i:i + rec_len]
-            if not chunk:
-                continue
-            try:
-                ids.add(int(chunk[0]))
-            except ValueError:
-                pass
-        return ids
+    rec_len = node_count + 1
+    line_bounds = []
+    cum = 0
+    for cnt in line_token_counts:
+        line_bounds.append((cum, cum + cnt))
+        cum += cnt
 
-    # --- fallback (khong biet node_count) ---
-    buffer = ''
-    for dl in data_lines:
-        buffer += dl
-        if buffer.rstrip().endswith(','):
-            continue
-        first_tok = buffer.split(',')[0].strip()
-        if first_tok:
-            try:
-                ids.add(int(first_tok))
-            except ValueError:
-                pass
-        buffer = ''
-    if buffer.strip():
-        first_tok = buffer.split(',')[0].strip()
-        if first_tok:
-            try:
-                ids.add(int(first_tok))
-            except ValueError:
-                pass
-    return ids
+    records = []
+    num_records = len(all_tokens) // rec_len
+    for r in range(num_records):
+        tok_start = r * rec_len
+        tok_end = tok_start + rec_len
+        rec_line_indices = [i for i, (s, e) in enumerate(line_bounds)
+                             if e > tok_start and s < tok_end]
+        rec_lines = [data_lines[i] for i in rec_line_indices]
+        try:
+            rec_id = int(all_tokens[tok_start])
+        except ValueError:
+            rec_id = None
+        records.append({'id': rec_id, 'lines': rec_lines})
+
+    leftover = len(all_tokens) % rec_len
+    return records, leftover
 
 
 # ---------------------------------------------------------------------------
-# Buoc 4: xu ly chinh
+# Buoc 6: xu ly chinh
 # ---------------------------------------------------------------------------
 
 def normalize(cards):
-    # 4.1 Gom cac *ELSET rieng: ten_goc (co prefix, dung lam key tra cuu vi
-    #     do la gia tri xuat hien trong ELSET= cua *SOLID SECTION) -> thong tin
-    elset_defs = {}  # raw_name -> {'card': Card, 'ids': set}
+    elset_defs = {}
     for c in cards:
         if c.keyword == 'ELSET':
             raw_name = c.params.get('ELSET')
@@ -252,61 +235,105 @@ def normalize(cards):
             ids = extract_ids_from_data_lines(c.data_lines, generate=generate)
             elset_defs[raw_name] = {'card': c, 'ids': ids}
 
-    # 4.2 Gom cac *ELEMENT block cung ID phan tu cua no
-    element_blocks = []
+    solid_section_names = set()
     for c in cards:
-        if c.keyword == 'ELEMENT':
-            type_name = c.params.get('TYPE')
-            node_count = guess_node_count(type_name)
-            if node_count is None:
-                print(f'  [canh bao] Khong doan duoc so node cho TYPE={type_name!r} '
-                      f'-> dung fallback (co the sai). Them vao ELEMENT_NODE_COUNTS neu can.')
-            ids = extract_element_ids(c.data_lines, node_count=node_count)
-            element_blocks.append({'card': c, 'ids': ids})
+        if c.keyword == 'SOLID SECTION':
+            n = c.params.get('ELSET')
+            if n:
+                solid_section_names.add(n)
 
-    # 4.3 Voi tung elset rieng, tim *ELEMENT block co ID trung khop hoan
-    #     toan -> inline ELSET vao *ELEMENT, danh dau *ELSET card la removed.
+    id_to_elset_name = {}
+    ambiguous_ids = set()
+    for raw_name in solid_section_names:
+        info = elset_defs.get(raw_name)
+        if not info:
+            continue
+        for eid in info['ids']:
+            if eid in id_to_elset_name and id_to_elset_name[eid] != raw_name:
+                ambiguous_ids.add(eid)
+            id_to_elset_name[eid] = raw_name
+    if ambiguous_ids:
+        print(f'  [canh bao] {len(ambiguous_ids)} element ID xuat hien trong '
+              f'nhieu hon 1 component-elset cung luc -- kiem tra lai du lieu.')
+
+    consumed_ids_per_elset = {name: set() for name in solid_section_names}
+
+    new_cards = []
+    for c in cards:
+        if c.keyword != 'ELEMENT':
+            new_cards.append(c)
+            continue
+
+        type_name = c.params.get('TYPE')
+        node_count = guess_node_count(type_name)
+        if node_count is None:
+            print(f'  [canh bao] Khong doan duoc so node cho TYPE={type_name!r} '
+                  f'-> giu nguyen block goc, KHONG tach/inline ELSET cho block nay.')
+            new_cards.append(c)
+            continue
+
+        records, leftover = parse_element_records(c.data_lines, node_count)
+        if leftover:
+            print(f'  [canh bao] Block *ELEMENT,TYPE={type_name} co du lieu le '
+                  f'({leftover} token) khong chia het theo so node={node_count} '
+                  f'-> co the doc sai record cuoi.')
+
+        if c.params.get('ELSET'):
+            new_cards.append(c)
+            continue
+
+        groups = []
+        for rec in records:
+            owner = id_to_elset_name.get(rec['id'])
+            if groups and groups[-1][0] == owner:
+                groups[-1][1].append(rec)
+            else:
+                groups.append((owner, [rec]))
+
+        if len(groups) == 1 and groups[0][0] is None:
+            new_cards.append(c)
+            continue
+
+        for owner, recs in groups:
+            sub_params = dict(c.params)
+            if owner is not None:
+                sub_params['ELSET'] = clean_pool_name(owner)
+                consumed_ids_per_elset[owner].update(
+                    r['id'] for r in recs if r['id'] is not None)
+            sub_card = Card(header=c.header, keyword='ELEMENT', params=sub_params)
+            for r in recs:
+                sub_card.data_lines.extend(r['lines'])
+            new_cards.append(sub_card)
+
     matched_elset_names = set()
-    for raw_name, info in elset_defs.items():
-        target = None
-        for eb in element_blocks:
-            if eb['card'].params.get('ELSET'):
-                continue  # block nay da co ELSET roi (vd dang inline san)
-            if eb['ids'] and eb['ids'] == info['ids']:
-                target = eb
-                break
-        if target is not None:
-            clean_name = clean_pool_name(raw_name)
-            target['card'].params['ELSET'] = clean_name
+    for name in solid_section_names:
+        info = elset_defs.get(name)
+        if not info:
+            continue
+        if info['ids'] and consumed_ids_per_elset[name] == info['ids']:
             info['card'].removed = True
-            matched_elset_names.add(raw_name)
+            matched_elset_names.add(name)
 
-    # 4.4 Lam sach ten (bo prefix pool) o TAT CA cac param con lai co kha
-    #     nang chua ten set: ELSET=, NAME=, NSET= trong cac card khong bi xoa.
     NAME_PARAM_KEYS = ('ELSET', 'NSET', 'NAME')
-    for c in cards:
+    for c in new_cards:
         if c.removed:
             continue
         for key in NAME_PARAM_KEYS:
             if key in c.params and c.params[key]:
                 c.params[key] = clean_pool_name(c.params[key])
 
-    return matched_elset_names
+    return new_cards, matched_elset_names
 
 
 # ---------------------------------------------------------------------------
-# Buoc 5: ghi lai header cua card tu params (giu nguyen thu tu param goc)
+# Buoc 7: ghi lai header + file output
 # ---------------------------------------------------------------------------
 
 def rebuild_header(card: Card, original_param_order):
-    """Dung lai dong header tu keyword + params, co gang giu thu tu param
-    nhu ban goc; param moi them (vd ELSET vua duoc inline) se noi vao ngay
-    sau TYPE (hoac cuoi cung neu khong tim thay TYPE)."""
     parts = ['*' + card.keyword]
     order = list(original_param_order)
     for k in card.params:
         if k not in order:
-            # chen ELSET moi ngay sau TYPE cho giong dinh dang 14.0
             if k == 'ELSET' and 'TYPE' in order:
                 idx = order.index('TYPE') + 1
                 order.insert(idx, k)
@@ -316,10 +343,7 @@ def rebuild_header(card: Card, original_param_order):
         if k not in card.params:
             continue
         v = card.params[k]
-        if v is None:
-            parts.append(k)
-        else:
-            parts.append(f'{k}={v}')
+        parts.append(k if v is None else f'{k}={v}')
     return ', '.join(parts)
 
 
@@ -349,8 +373,8 @@ def main():
 
     in_path, out_path = sys.argv[1], sys.argv[2]
     cards = load_cards(in_path)
-    matched = normalize(cards)
-    write_output(cards, out_path)
+    new_cards, matched = normalize(cards)
+    write_output(new_cards, out_path)
 
     print(f'Da xu ly {in_path} -> {out_path}')
     print(f'So ELSET duoc inline lai vao *ELEMENT (va xoa block rieng): {len(matched)}')

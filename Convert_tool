@@ -146,18 +146,80 @@ def extract_ids_from_data_lines(data_lines, generate=False):
     return ids
 
 
-def extract_element_ids(data_lines):
-    """Cho *ELEMENT: chi ID PHAN TU la truong dau tien cua record; cac
-    record co the bi ngat dong (continuation, dong cuoi ket thuc khong co
-    dau phay trailing) -- ta gop lai truoc khi tach theo 'record' dua vao
-    dau phay cuoi dong."""
+# So node cho cac loai element Abaqus thuong gap (element_id KHONG tinh
+# trong so nay -- day la so node thuc, tong so truong tren 1 record =
+# node_count + 1). Bo sung them neu file cua ban dung TYPE khac.
+ELEMENT_NODE_COUNTS = {
+    'C3D4': 4, 'C3D4H': 4,
+    'C3D6': 6, 'C3D6H': 6,
+    'C3D8': 8, 'C3D8H': 8, 'C3D8I': 8, 'C3D8IH': 8, 'C3D8R': 8, 'C3D8RH': 8,
+    'C3D8T': 8,
+    'C3D10': 10, 'C3D10H': 10, 'C3D10M': 10, 'C3D10MH': 10, 'C3D10I': 10,
+    'C3D10MT': 10,
+    'C3D15': 15, 'C3D15H': 15,
+    'C3D20': 20, 'C3D20H': 20, 'C3D20R': 20, 'C3D20RH': 20,
+    'S3': 3, 'S3R': 3, 'STRI3': 3,
+    'S4': 4, 'S4R': 4, 'S4RS': 4,
+    'S8R': 8, 'S8R5': 8, 'STRI65': 6,
+    'T3D2': 2, 'T2D2': 2,
+    'B21': 2, 'B31': 2, 'B22': 3, 'B32': 3,
+}
+
+
+def guess_node_count(type_name):
+    """Doan so node cua 1 element TYPE. Uu tien tra bang co san; neu khong
+    co, thu regex cho cac ho ten thuong gap (Cxx#, S#...); tra None neu
+    chiu (luc do se fallback ve heuristic dau phay cuoi dong, kem canh
+    bao de nguoi dung tu kiem tra)."""
+    if not type_name:
+        return None
+    t = type_name.upper()
+    if t in ELEMENT_NODE_COUNTS:
+        return ELEMENT_NODE_COUNTS[t]
+    m = re.match(r'C3D(\d+)', t)
+    if m:
+        return int(m.group(1))
+    m = re.match(r'C(?:AX|PE|PS)(\d+)', t)  # 2D continuum: CAX4, CPE8, ...
+    if m:
+        return int(m.group(1))
+    m = re.match(r'S(\d+)', t)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def extract_element_ids(data_lines, node_count=None):
+    """Cho *ELEMENT: gop tat ca token (tach theo dau phay, bo token rong do
+    dau phay cuoi dong) thanh 1 dong chay, roi cat thanh tung record co do
+    dai co dinh = node_count + 1 (id + node). Day la cach dung vi Abaqus
+    /HyperMesh co the ghi dau phay cuoi dong ke ca khi record da du du lieu
+    (khong phai luc nao dau phay cuoi dong cung nghia la 'con tiep tuc').
+
+    Neu khong xac dinh duoc node_count (TYPE la), fallback ve heuristic cu:
+    dau phay cuoi dong = record chua xong (co the sai voi mot so TYPE)."""
+    tokens = []
+    for dl in data_lines:
+        tokens.extend(tok.strip() for tok in dl.split(',') if tok.strip())
+
     ids = set()
+    if node_count:
+        rec_len = node_count + 1
+        for i in range(0, len(tokens), rec_len):
+            chunk = tokens[i:i + rec_len]
+            if not chunk:
+                continue
+            try:
+                ids.add(int(chunk[0]))
+            except ValueError:
+                pass
+        return ids
+
+    # --- fallback (khong biet node_count) ---
     buffer = ''
     for dl in data_lines:
         buffer += dl
         if buffer.rstrip().endswith(','):
-            continue  # con continuation, doc tiep dong sau
-        # 1 record hoan chinh (co the gom nhieu dong da noi lai)
+            continue
         first_tok = buffer.split(',')[0].strip()
         if first_tok:
             try:
@@ -194,7 +256,12 @@ def normalize(cards):
     element_blocks = []
     for c in cards:
         if c.keyword == 'ELEMENT':
-            ids = extract_element_ids(c.data_lines)
+            type_name = c.params.get('TYPE')
+            node_count = guess_node_count(type_name)
+            if node_count is None:
+                print(f'  [canh bao] Khong doan duoc so node cho TYPE={type_name!r} '
+                      f'-> dung fallback (co the sai). Them vao ELEMENT_NODE_COUNTS neu can.')
+            ids = extract_element_ids(c.data_lines, node_count=node_count)
             element_blocks.append({'card': c, 'ids': ids})
 
     # 4.3 Voi tung elset rieng, tim *ELEMENT block co ID trung khop hoan

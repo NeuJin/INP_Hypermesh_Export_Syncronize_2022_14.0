@@ -148,6 +148,27 @@ def load_cards(path: str):
 POOL_PREFIX_RE = re.compile(r'^[A-Za-z]+\d+(?::[A-Za-z]+\d+)?;')
 
 
+def extract_component_name_from_comment(header):
+    """Neu dong comment (bat dau bang '**') la mot dong '**HW_COMPONENT
+    ID=... COLOR=... NAME=<ten>', tra ve <ten> (raw, chua lam sach prefix).
+    Dong nay dung whitespace de tach cot (khong dung dau phay nhu cac
+    keyword Abaqus binh thuong), nen phai tu tach rieng, khong dung
+    parse_keyword_line()."""
+    if not header:
+        return None
+    content = header.strip()
+    if not content.startswith('**'):
+        return None
+    body = content.lstrip('*').strip()
+    parts = body.split()
+    if not parts or parts[0].upper() != 'HW_COMPONENT':
+        return None
+    for p in parts[1:]:
+        if p.upper().startswith('NAME='):
+            return p.split('=', 1)[1].strip()
+    return None
+
+
 def clean_pool_name(raw_name: str) -> str:
     """Bo TAT CA prefix pool o dau ten, ke ca khi bi lap chuoi nhieu lan
     (vd 'P15;P15;P15;Upper' -> 'Upper'). POOL_PREFIX_RE.sub() chi khop
@@ -312,7 +333,16 @@ def normalize(cards):
     element_card_count = 0
     total_record_count = 0
     new_cards = []
+    current_component = None  # ten component (raw) tu dong **HW_COMPONENT gan nhat
+    hw_component_used = False
     for c in cards:
+        if c.keyword == '__COMMENT__':
+            name = extract_component_name_from_comment(c.header)
+            if name:
+                current_component = name
+            new_cards.append(c)
+            continue
+
         if c.keyword != 'ELEMENT':
             new_cards.append(c)
             continue
@@ -340,9 +370,19 @@ def normalize(cards):
             new_cards.append(c)
             continue
 
+        # Chu so huu mac dinh cua CA block nay: component duoc khai bao qua
+        # dong **HW_COMPONENT ngay truoc block *ELEMENT nay (nguon CHINH,
+        # vi file HyperMesh 2022 thuc te thuong KHONG co *ELSET rieng cho
+        # tung component). Neu 1 ID cu the co mat trong bang tra cuu id_to_
+        # elset_name (tu *ELSET thuc su khop *SOLID SECTION -- nguon PHU,
+        # legacy) thi uu tien nguon do cho rieng ID ay.
+        block_default_owner = current_component
+        if block_default_owner is not None:
+            hw_component_used = True
+
         groups = []
         for rec in records:
-            owner = id_to_elset_name.get(rec['id'])
+            owner = id_to_elset_name.get(rec['id'], block_default_owner)
             if groups and groups[-1][0] == owner:
                 groups[-1][1].append(rec)
             else:
@@ -356,8 +396,9 @@ def normalize(cards):
             sub_params = dict(c.params)
             if owner is not None:
                 sub_params['ELSET'] = clean_pool_name(owner)
-                consumed_ids_per_elset[owner].update(
-                    r['id'] for r in recs if r['id'] is not None)
+                if owner in consumed_ids_per_elset:
+                    consumed_ids_per_elset[owner].update(
+                        r['id'] for r in recs if r['id'] is not None)
             sub_card = Card(header=c.header, keyword='ELEMENT', params=sub_params)
             for r in recs:
                 sub_card.data_lines.extend(r['lines'])
@@ -365,6 +406,9 @@ def normalize(cards):
 
     print(f'      Da xu ly {element_card_count:,} block *ELEMENT '
           f'({total_record_count:,} phan tu tong cong).', flush=True)
+    if hw_component_used:
+        print('      Da dung dong **HW_COMPONENT lam nguon chinh de gan '
+              'ELSET cho cac block khong co *ELSET rieng.', flush=True)
 
     matched_elset_names = set()
     for name in solid_section_names:
@@ -491,6 +535,39 @@ def collect_elset_ids_from_original(cards):
     return out
 
 
+def collect_element_ids_by_hw_component(cards):
+    """Doc lap voi normalize(): tu file GOC, duyet cards theo THU TU, theo
+    doi dong comment '**HW_COMPONENT ... NAME=<ten>' gan nhat, roi gan
+    TOAN BO 1 block *ELEMENT (khong co ELSET rieng) cho component do. Day
+    la nguon "expected" DUNG VOI CAU TRUC FILE THUC TE (HyperMesh 2022
+    thuong KHONG co *ELSET rieng cho tung component, chi co dong comment
+    HW_COMPONENT dung lam nguon xac dinh chu so huu).
+    Tra ve: clean_component_name -> set ID."""
+    result = {}
+    current_component = None
+    for c in cards:
+        if c.keyword == '__COMMENT__':
+            name = extract_component_name_from_comment(c.header)
+            if name:
+                current_component = name
+            continue
+        if c.keyword != 'ELEMENT':
+            continue
+        node_count = guess_node_count(c.params.get('TYPE'))
+        if node_count is None:
+            continue
+        records, _leftover = parse_element_records(c.data_lines, node_count)
+        owner_raw = c.params.get('ELSET') or current_component
+        if owner_raw is None:
+            continue
+        clean_name = clean_pool_name(owner_raw)
+        bucket = result.setdefault(clean_name, set())
+        for r in records:
+            if r['id'] is not None:
+                bucket.add(r['id'])
+    return result
+
+
 def collect_solid_section_names(cards):
     return {c.params.get('ELSET') for c in cards
             if c.keyword == 'SOLID SECTION' and c.params.get('ELSET')}
@@ -580,6 +657,7 @@ def validate(orig_cards, out_path):
     # --- 3. Gan dung component (so voi *SOLID SECTION trong file GOC) ---
     orig_elset_ids = collect_elset_ids_from_original(orig_cards)
     orig_solid_names = collect_solid_section_names(orig_cards)
+    orig_hw_component_ids = collect_element_ids_by_hw_component(orig_cards)
 
     out_ids_by_clean_elset = {}
     for b in out_blocks:
@@ -588,13 +666,23 @@ def validate(orig_cards, out_path):
         out_ids_by_clean_elset.setdefault(b['elset'], set()).update(b['ids'])
 
     mismatch_count = 0
+    checked_count = 0
     for raw_name in sorted(orig_solid_names):
-        expected_ids = orig_elset_ids.get(raw_name)
+        clean_name = clean_pool_name(raw_name)
+        info = orig_elset_ids.get(raw_name)
+        source = None
+        if info is not None:
+            expected_ids = info
+            source = '*ELSET'
+        else:
+            expected_ids = orig_hw_component_ids.get(clean_name)
+            source = '**HW_COMPONENT'
         if expected_ids is None:
             warnings.append(f'*SOLID SECTION tham chieu ELSET={raw_name!r} nhung '
-                             f'khong tim thay dinh nghia *ELSET tuong ung trong file goc.')
+                             f'khong tim thay dinh nghia *ELSET LAN dong '
+                             f'**HW_COMPONENT tuong ung trong file goc.')
             continue
-        clean_name = clean_pool_name(raw_name)
+        checked_count += 1
         actual_ids = out_ids_by_clean_elset.get(clean_name, set())
         if actual_ids != expected_ids:
             mismatch_count += 1
@@ -605,11 +693,14 @@ def validate(orig_cards, out_path):
                 detail.append(f'thieu {len(miss)} ID (vd {sorted(list(miss))[:5]})')
             if extra_ids:
                 detail.append(f'thua {len(extra_ids)} ID (vd {sorted(list(extra_ids))[:5]})')
-            failures.append(f'Component "{clean_name}": gan SAI trong OUTPUT -- '
-                             f'{", ".join(detail)}.')
-    if mismatch_count == 0:
-        print(f'[PASS] Gan dung component: {len(orig_solid_names):,} component '
-              f'deu khop chinh xac tung ID.')
+            failures.append(f'Component "{clean_name}" (nguon doi chieu: {source}): '
+                             f'gan SAI trong OUTPUT -- {", ".join(detail)}.')
+    if mismatch_count == 0 and checked_count:
+        print(f'[PASS] Gan dung component: {checked_count:,}/{len(orig_solid_names):,} '
+              f'component deu khop chinh xac tung ID.')
+    elif mismatch_count == 0 and not checked_count:
+        print(f'[PASS] Gan dung component: khong co component nao doi chieu duoc '
+              f'(xem canh bao).')
 
     # --- 4. Khong con tham chieu treo ---
     defined = all_defined_set_names(out_cards)

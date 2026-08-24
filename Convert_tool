@@ -786,6 +786,79 @@ def main():
 # --diag file.inp
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# CHECK RIENG: mapping component -> TYPE phan tu MONG DOI (nguoi dung cung
+# cap thu cong), doi chieu voi TYPE thuc te tim thay trong file, chi in ra
+# console de debug -- CHUA lam thanh tool/che do rieng, chi chay khi goi
+# truc tiep: python3 convert_and_validate_inp.py --checktype file.inp
+# ---------------------------------------------------------------------------
+
+EXPECTED_COMPONENT_ELEMENT_TYPE = {
+    'Bush': 'C3D10M',
+    'KnockPin': 'C3D10M',
+    'Bolt_Penta': 'C3D6',
+    'Bolt_Hexa': 'C3D8I',
+    'Piston_Pin': 'C3D8I',
+    'Lower': 'C3D8I',
+    'Upper': 'C3D8I',
+    'Cap_Shoulder': 'C3D10M',
+    'Cap1': 'C3D10M',
+    'Cap2': 'C3D10M',
+    'Cap_Tetra': 'C3D10M',
+    'Conrod_SE_Bore': 'C3D10M',
+    'Conrod1': 'C3D10M',
+    'Conrod2': 'C3D10M',
+    'Conrod_Tetra': 'C3D10M',
+}
+
+
+def run_checktype(path):
+    """Doc lai file (goc hoac da convert deu duoc, vi chi can **HW_COMPONENT
+    + *ELEMENT TYPE), gom TYPE thuc te tung component tim thay, so voi
+    EXPECTED_COMPONENT_ELEMENT_TYPE, in canh bao neu lech."""
+    cards = load_cards(path)
+
+    actual_types_by_component = {}  # clean_component_name -> set(TYPE)
+    current_component = None
+    for c in cards:
+        if c.keyword == '__COMMENT__':
+            name = extract_component_name_from_comment(c.header)
+            if name:
+                current_component = clean_pool_name(name)
+            continue
+        if c.keyword != 'ELEMENT':
+            continue
+        owner = c.params.get('ELSET')
+        owner = clean_pool_name(owner) if owner else current_component
+        if owner is None:
+            continue
+        actual_types_by_component.setdefault(owner, set()).add(c.params.get('TYPE'))
+
+    print(f'Tim thay TYPE thuc te cho {len(actual_types_by_component)} component:\n')
+    mismatch = 0
+    for comp, expected_type in EXPECTED_COMPONENT_ELEMENT_TYPE.items():
+        actual = actual_types_by_component.get(comp)
+        if actual is None:
+            print(f'  [KHONG TIM THAY] Component "{comp}" (mong doi {expected_type}) '
+                  f'khong xuat hien trong file (kiem tra ten/khoang trang).')
+            mismatch += 1
+            continue
+        if actual == {expected_type}:
+            print(f'  [OK] {comp}: {expected_type}')
+        else:
+            print(f'  [LECH TYPE] {comp}: mong doi {expected_type}, thuc te tim thay '
+                  f'{sorted(actual)}')
+            mismatch += 1
+
+    extra_components = set(actual_types_by_component) - set(EXPECTED_COMPONENT_ELEMENT_TYPE)
+    if extra_components:
+        print(f'\n  [CANH BAO] {len(extra_components)} component trong file KHONG co '
+              f'trong bang mong doi (chua duoc khai bao truoc): {sorted(extra_components)}')
+
+    print(f'\nTong ket: {mismatch} van de can kiem tra lai '
+          f'(trong so {len(EXPECTED_COMPONENT_ELEMENT_TYPE)} component mong doi).')
+
+
 def run_diagnostic(path):
     cards = load_cards(path)
 
@@ -830,5 +903,8 @@ def run_diagnostic(path):
 if __name__ == '__main__':
     if len(sys.argv) == 3 and sys.argv[1] == '--diag':
         run_diagnostic(sys.argv[2])
+        sys.exit(0)
+    if len(sys.argv) == 3 and sys.argv[1] == '--checktype':
+        run_checktype(sys.argv[2])
         sys.exit(0)
     main()

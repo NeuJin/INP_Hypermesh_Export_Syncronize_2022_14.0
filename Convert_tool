@@ -778,5 +778,57 @@ def main():
     sys.exit(0 if ok else 1)
 
 
+# ---------------------------------------------------------------------------
+# CHAN DOAN RIENG: so sanh tung ky tu giua ten *SOLID SECTION (da lam sach)
+# va danh sach ten **HW_COMPONENT tim duoc, de phat hien lech do khoang
+# trang / hoa-thuong / ky tu an ma mat thuong khong thay qua man hinh/anh
+# chup. Chi chay khi goi truc tiep: python3 convert_and_validate_inp.py
+# --diag file.inp
+# ---------------------------------------------------------------------------
+
+def run_diagnostic(path):
+    cards = load_cards(path)
+
+    hw_names_raw = []
+    for c in cards:
+        if c.keyword == '__COMMENT__':
+            name = extract_component_name_from_comment(c.header)
+            if name:
+                hw_names_raw.append(name)
+
+    solid_names_raw = sorted({c.params.get('ELSET') for c in cards
+                               if c.keyword == 'SOLID SECTION' and c.params.get('ELSET')})
+
+    print(f'Tim thay {len(hw_names_raw)} dong **HW_COMPONENT co NAME=.')
+    print(f'Tim thay {len(solid_names_raw)} ten *SOLID SECTION.\n')
+
+    hw_clean_set = {clean_pool_name(n): n for n in hw_names_raw}
+
+    print('So sanh tung ten *SOLID SECTION (sau khi lam sach prefix) voi '
+          'danh sach ten HW_COMPONENT:\n')
+    for raw in solid_names_raw:
+        clean = clean_pool_name(raw)
+        match = clean in hw_clean_set
+        print(f'  SOLID SECTION raw : {raw!r}')
+        print(f'  -> sau lam sach   : {clean!r}  (len={len(clean)})')
+        print(f'     bytes          : {clean.encode("utf-8")!r}')
+        if match:
+            print(f'  [OK] khop voi HW_COMPONENT: {hw_clean_set[clean]!r}')
+        else:
+            # tim ten HW_COMPONENT gan giong nhat (case-insensitive / strip)
+            close = [hw for hw in hw_clean_set
+                     if hw.strip().lower() == clean.strip().lower()]
+            if close:
+                print(f'  [GAN KHOP nhung KHONG khop tuyet doi] ung vien: {close!r}')
+                for hw in close:
+                    print(f'     HW_COMPONENT bytes: {hw.encode("utf-8")!r} (len={len(hw)})')
+            else:
+                print('  [KHONG TIM THAY ung vien nao gan giong trong HW_COMPONENT]')
+        print()
+
+
 if __name__ == '__main__':
+    if len(sys.argv) == 3 and sys.argv[1] == '--diag':
+        run_diagnostic(sys.argv[2])
+        sys.exit(0)
     main()

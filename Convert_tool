@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# CACH CHAY: python convert_and_validate_inp.py input.inp output.inp   |   --diag input.inp   |   --checktype input.inp
 """
 convert_and_validate_inp.py
 
@@ -449,7 +450,7 @@ def rebuild_header(card: Card, original_param_order):
             continue
         v = card.params[k]
         parts.append(k if v is None else f'{k}={v}')
-    return ', '.join(parts)
+    return ','.join(parts)
 
 
 def write_output(cards, out_path):
@@ -738,6 +739,25 @@ def validate(orig_cards, out_path):
                          f'pool: {[(k, v) for _, k, v in leftover[:5]]}')
     else:
         print('[PASS] Khong con sot prefix "Pxx;" / "Sxx;" nao trong ten set.')
+
+    # --- 7. Phai co it nhat 1 *MATERIAL ---
+    out_material_names = {c.params.get('NAME') for c in out_cards
+                           if c.keyword == 'MATERIAL' and c.params.get('NAME')}
+    if not out_material_names:
+        failures.append('OUTPUT KHONG co bat ky khoi *MATERIAL nao -- file se '
+                         'khong chay duoc trong Abaqus (thieu dinh nghia vat lieu).')
+    else:
+        # Doi chieu: moi *SOLID SECTION tham chieu MATERIAL=<ten> phai co
+        # *MATERIAL,NAME=<ten> tuong ung dinh nghia trong OUTPUT.
+        referenced_materials = {c.params.get('MATERIAL') for c in out_cards
+                                 if c.keyword == 'SOLID SECTION' and c.params.get('MATERIAL')}
+        missing_materials = referenced_materials - out_material_names
+        if missing_materials:
+            failures.append(f'OUTPUT co *SOLID SECTION tham chieu MATERIAL '
+                             f'nhung KHONG duoc dinh nghia: {sorted(missing_materials)}')
+        else:
+            print(f'[PASS] Co {len(out_material_names):,} *MATERIAL, khop day du '
+                  f'voi tat ca *SOLID SECTION tham chieu toi.')
 
     # --- Tong ket ---
     print()

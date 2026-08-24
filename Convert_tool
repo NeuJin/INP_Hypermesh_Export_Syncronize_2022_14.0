@@ -455,13 +455,24 @@ def rebuild_header(card: Card, original_param_order):
 def write_output(cards, out_path):
     print(f'[4/4] Dang ghi file output: {out_path} ...', flush=True)
     with open(out_path, 'w', encoding='utf-8') as f:
+        in_header = True
         for idx, c in enumerate(cards):
             if idx and idx % 200000 == 0:
                 print(f'      ... da ghi {idx:,}/{len(cards):,} card', flush=True)
             if c.removed:
                 continue
+            if in_header:
+                if c.keyword in ('__COMMENT__', '__RAW__'):
+                    # Con trong khoi header dau file (truoc keyword Abaqus
+                    # that su dau tien, vd *NODE) -> giu nguyen, KHONG xoa.
+                    f.write(c.header + '\n')
+                    continue
+                # Gap keyword Abaqus that su dau tien -> ket thuc header,
+                # tu day tro di comment "**" (vd **HW_COMPONENT) bi xoa
+                # nhu binh thuong. Chen 1 dong ghi chu ngay sau header.
+                f.write('** Converted by Fukada tool\n')
+                in_header = False
             if c.keyword == '__COMMENT__':
-                # Yeu cau: don sach het cac dong comment "**" khoi output.
                 continue
             if c.keyword == '__RAW__':
                 f.write(c.header + '\n')
